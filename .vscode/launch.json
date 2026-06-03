@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "configurations": [
+    {
+      "type": "cppdbg",
+      "request": "launch",
+      "name": "Launch Program",
+      "program": "${workspaceFolder}\\build\\Http-C",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "Build",
+    }
+  ]
+}
