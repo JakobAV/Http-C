@@ -3,7 +3,7 @@
 
 typedef signed char i8;
 typedef signed short i16;
-typedef signed long int i32;
+typedef signed int i32;
 typedef signed long long i64;
 
 typedef unsigned char u8;
@@ -13,6 +13,8 @@ typedef unsigned long long u64;
 
 typedef float f32;
 typedef double f64;
+
+typedef u32 b32;
 
 typedef struct StringLit
 {
@@ -31,3 +33,6 @@ typedef struct StringLit
 #define MB(n) (((u64)n) << 20)
 #define GB(n) (((u64)n) << 30)
 #define TB(n) (((u64)n) << 40)
+
+#define false 0
+#define true 1
