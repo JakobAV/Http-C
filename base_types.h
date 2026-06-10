@@ -16,13 +16,13 @@ typedef double f64;
 
 typedef u32 b32;
 
-typedef struct StringLit
+typedef struct String
 {
   i64 length;
   char* text;
-} StringLit;
+} String;
 
-#define STR_LIT(text) (StringLit){sizeof(text)-1, text}
+#define STR_LIT(text) (String){sizeof(text)-1, text}
 
 #define InvalidCodePath assert(0)
 #define NotImplemented assert(0)

@@ -1,7 +1,7 @@
 #pragma once
 #include "base_types.h"
 
-b32 strings_are_equal(StringLit string_one, StringLit string_two)
+b32 strings_are_equal(String string_one, String string_two)
 {
   assert(string_one.text && string_two.text);
   if(string_one.length != string_two.length)
@@ -25,10 +25,10 @@ b32 strings_are_equal(StringLit string_one, StringLit string_two)
   return true;
 }
 
-StringLit string_trim_whitespace_left(StringLit string)
+String string_trim_whitespace_left(String string)
 {
   assert(string.text);
-  StringLit result = string;
+  String result = string;
   while (result.length > 0)
   {
      char c = result.text[0];
@@ -44,7 +44,7 @@ StringLit string_trim_whitespace_left(StringLit string)
   return result;
 }
 
-i64 string_parse_int(StringLit string)
+i64 string_parse_int(String string)
 {
   string = string_trim_whitespace_left(string);
   assert(string.text && string.length > 0);

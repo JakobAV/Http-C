@@ -38,15 +38,15 @@ typedef enum HttpProtocolVersion
 
 typedef struct HttpRequest
 {
-  StringLit raw_message;
+  String raw_message;
   HttpMethod method;
-  StringLit path;
+  String path;
   HttpProtocolVersion protocol_version;
-  StringLit host;
-  StringLit user_agent;
-  StringLit content_type;
+  String host;
+  String user_agent;
+  String content_type;
   u64 content_length;
-  StringLit body;
+  String body;
   // TODO: Support more headers
 } HttpRequest;
 
@@ -54,11 +54,11 @@ typedef struct HttpResponse
 {
   HttpProtocolVersion protocol_version;
   u8 status_code;
-  StringLit host;
-  StringLit content_type;
+  String host;
+  String content_type;
   u64 content_length;
-  StringLit headers[128];
-  StringLit body;
+  String headers[128];
+  String body;
 } HttpResponse;
 
 typedef struct HttpMessageParser
@@ -128,9 +128,9 @@ void http_parser_advance(HttpMessageParser *message_parser)
   }
 }
 
-StringLit http_parser_get_next_string(HttpMessageParser *message_parser)
+String http_parser_get_next_string(HttpMessageParser *message_parser)
 {
-  StringLit result = {0};
+  String result = {0};
   result.text = message_parser->buffer + message_parser->current_position;
   http_parser_advance(message_parser);
   result.length = (message_parser->buffer + message_parser->current_position) - result.text - 1;
@@ -210,7 +210,7 @@ HttpMethod parse_http_method(HttpMessageParser *message_parser)
   return result;
 }
 
-StringLit parse_http_path(HttpMessageParser *message_parser)
+String parse_http_path(HttpMessageParser *message_parser)
 {
   return http_parser_get_next_string(message_parser);
 }
@@ -270,8 +270,8 @@ void parse_http_request_headers(HttpRequest *request, HttpMessageParser *message
 {
   while (http_parser_peek_next_character(message_parser) != '\r')
   {
-    StringLit current_header_name = http_parser_get_next_string(message_parser);
-    StringLit current_header_value = http_parser_get_next_string(message_parser);
+    String current_header_name = http_parser_get_next_string(message_parser);
+    String current_header_value = http_parser_get_next_string(message_parser);
     if (strings_are_equal(current_header_name, STR_LIT("Host:")))
     {
       request->host = current_header_value;
@@ -373,7 +373,7 @@ int main()
     } while (bytes_read == max_read_size);
     printf("\nHeader:\n%.*s\n", (i32)(out.body.text-out.raw_message.text), out.raw_message.text);
     printf("\nBody:\n%.*s\n", (i32)out.body.length, out.body.text);
-    StringLit response = STR_LIT("HTTP/1.1 204 OK\n\n");
+    String response = STR_LIT("HTTP/1.1 204 OK\n\n");
     send(new_socket_fd, response.text, response.length, 0);
   }
 
