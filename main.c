@@ -9,6 +9,8 @@
 #include <errno.h>
 #include <signal.h>
 
+#include "arena.c"
+
 #define DEFAULT_PORT 8888
 
 typedef enum HttpMethod
@@ -316,8 +318,10 @@ HttpRequest parse_http_request(HttpMessageParser *message_parser)
   return request;
 }
 
-char buffer[KB(1)];
 i32 server_fd = -1;
+
+Arena permanent_arena;
+Arena request_arena;
 
 void crash_handler()
 {
@@ -350,31 +354,40 @@ int main()
       printf("Failed to establish connection. Error code: %d\n", new_socket_fd);
       continue;
     }
-
+    TempMemory temp_memory = temp_memory_begin(&request_arena);
     printf("New connection\n");
-    i64 bytes_read = 0;
-    i64 max_read_size = sizeof(buffer) - 1;
-    HttpRequest out = {0};
-    do
+    i64 total_bytes_read = 0;
+    i64 max_read_size = KB(1);
+    char *request_buffer = null;
+    while (true)
     {
-      bytes_read = read(new_socket_fd, buffer, max_read_size);
-      if (bytes_read > 0)
+      char *p = arena_push(&request_arena, max_read_size);
+      if (request_buffer == null)
       {
-        HttpMessageParser message_parser = {
-            .buffer = buffer,
-            .buffer_length = bytes_read,
-            .current_position = 0,
-        };
-        HttpRequest request = parse_http_request(&message_parser);
-        request.raw_message.text = buffer;
-        request.raw_message.length = bytes_read;
-        out = request;
+        request_buffer = p;
       }
-    } while (bytes_read == max_read_size);
-    printf("\nHeader:\n%.*s\n", (i32)(out.body.text-out.raw_message.text), out.raw_message.text);
-    printf("\nBody:\n%.*s\n", (i32)out.body.length, out.body.text);
+      i64 bytes_read = read(new_socket_fd, p, max_read_size);
+      total_bytes_read += bytes_read;
+      if (bytes_read < max_read_size)
+      {
+        break;
+      }
+    }
+
+    HttpMessageParser message_parser = {
+        .buffer = request_buffer,
+        .buffer_length = total_bytes_read,
+        .current_position = 0,
+    };
+    HttpRequest request = parse_http_request(&message_parser);
+    request.raw_message.text = request_buffer;
+    request.raw_message.length = total_bytes_read;
+    printf("\nHeader:\n%.*s\n", (i32)(request.body.text - request.raw_message.text), request.raw_message.text);
+    printf("\nBody:\n%.*s\n", (i32)request.body.length, request.body.text);
     String response = STR_LIT("HTTP/1.1 204 OK\n\n");
     send(new_socket_fd, response.text, response.length, 0);
+
+    temp_memory_end(temp_memory);
   }
 
   printf("Done\n");
