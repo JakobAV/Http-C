@@ -1,5 +1,3 @@
-#include "base_types.h"
-#include "string_utils.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +6,10 @@
 #include <sys/socket.h>
 #include <errno.h>
 #include <signal.h>
+
+#include "base_types.h"
+#include "string_utils.h"
+#include "http_status.h"
 
 #include "arena.c"
 
@@ -55,10 +57,10 @@ typedef struct HttpRequest
 typedef struct HttpResponse
 {
   HttpProtocolVersion protocol_version;
-  u8 status_code;
-  String host;
+  HttpStatus status_code;
   String content_type;
   u64 content_length;
+  u32 header_count;
   String headers[128];
   String body;
 } HttpResponse;
@@ -83,6 +85,14 @@ int create_server(i16 port)
       .sin_addr.s_addr = INADDR_ANY,
       .sin_family = AF_INET,
   };
+  i32 opt = 1;
+  // Forcefully attaching socket to the port even if it's in TIME_WAIT
+  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+  {
+    printf("setsockopt failed\n");
+    close(server_fd);
+    return -1;
+  }
   if (bind(server_fd, (struct sockaddr *)&socket_address, sizeof(struct sockaddr_in)) == -1)
   {
     printf("Error binding socket\n");
@@ -113,8 +123,7 @@ char http_parser_get_next_character(HttpMessageParser *message_parser)
   message_parser->current_position++;
   return c;
 }
-
-void http_parser_advance(HttpMessageParser *message_parser)
+void http_parser_advance_to(HttpMessageParser *message_parser, char stop_char)
 {
   while (1)
   {
@@ -123,23 +132,24 @@ void http_parser_advance(HttpMessageParser *message_parser)
       break;
     }
     char c = http_parser_get_next_character(message_parser);
-    if (c == ' ' || c == '\n')
+    if (c == stop_char)
     {
+      if (stop_char == '\r')
+      {
+        // skip the \n
+        message_parser->current_position++;
+      }
       break;
     }
   }
 }
 
-String http_parser_get_next_string(HttpMessageParser *message_parser)
+String http_parser_get_next_string(HttpMessageParser *message_parser, char stop_char)
 {
   String result = {0};
   result.text = message_parser->buffer + message_parser->current_position;
-  http_parser_advance(message_parser);
-  result.length = (message_parser->buffer + message_parser->current_position) - result.text - 1;
-  if (result.text[result.length - 1] == '\r')
-  {
-    result.length--;
-  }
+  http_parser_advance_to(message_parser, stop_char);
+  result.length = (message_parser->buffer + message_parser->current_position) - result.text - (stop_char == '\r' ? 2 : 1);
   return result;
 }
 
@@ -208,13 +218,13 @@ HttpMethod parse_http_method(HttpMessageParser *message_parser)
   }
   break;
   }
-  http_parser_advance(message_parser);
+  http_parser_advance_to(message_parser, ' ');
   return result;
 }
 
 String parse_http_path(HttpMessageParser *message_parser)
 {
-  return http_parser_get_next_string(message_parser);
+  return http_parser_get_next_string(message_parser, ' ');
 }
 
 HttpProtocolVersion parse_http_protocol_version(HttpMessageParser *message_parser)
@@ -264,7 +274,7 @@ HttpProtocolVersion parse_http_protocol_version(HttpMessageParser *message_parse
   default:
     break;
   }
-  http_parser_advance(message_parser);
+  http_parser_advance_to(message_parser, '\r');
   return version;
 }
 
@@ -272,8 +282,8 @@ void parse_http_request_headers(HttpRequest *request, HttpMessageParser *message
 {
   while (http_parser_peek_next_character(message_parser) != '\r')
   {
-    String current_header_name = http_parser_get_next_string(message_parser);
-    String current_header_value = http_parser_get_next_string(message_parser);
+    String current_header_name = http_parser_get_next_string(message_parser, ' ');
+    String current_header_value = http_parser_get_next_string(message_parser, '\r');
     if (strings_are_equal(current_header_name, STR_LIT("Host:")))
     {
       request->host = current_header_value;
@@ -296,7 +306,7 @@ void parse_http_request_headers(HttpRequest *request, HttpMessageParser *message
     }
     // TODO: Add support for more and none-special-case headers
   }
-  http_parser_advance(message_parser);
+  http_parser_advance_to(message_parser, '\r');
 }
 
 HttpRequest parse_http_request(HttpMessageParser *message_parser)
@@ -331,6 +341,15 @@ void crash_handler()
   }
   _Exit(EXIT_FAILURE);
 }
+
+#define wrapped_send(one, two, three, four)\
+printf("%.*s", (i32)three, two);\
+send(one, two, three, four)
+
+#ifndef wrapped_send
+#define wrapped_send(one, two, three, four)\
+send(one, two, three, four)
+#endif
 
 int main()
 {
@@ -380,12 +399,86 @@ int main()
         .current_position = 0,
     };
     HttpRequest request = parse_http_request(&message_parser);
-    request.raw_message.text = request_buffer;
-    request.raw_message.length = total_bytes_read;
-    printf("\nHeader:\n%.*s\n", (i32)(request.body.text - request.raw_message.text), request.raw_message.text);
-    printf("\nBody:\n%.*s\n", (i32)request.body.length, request.body.text);
-    String response = STR_LIT("HTTP/1.1 204 OK\n\n");
-    send(new_socket_fd, response.text, response.length, 0);
+    b32 supported_protocol =
+        request.protocol_version == HttpProtocolVersion_0_9 ||
+        request.protocol_version == HttpProtocolVersion_1_0 ||
+        request.protocol_version == HttpProtocolVersion_1_1;
+    HttpResponse response = {0};
+    response.protocol_version = HttpProtocolVersion_1_1;
+    if (!supported_protocol)
+    {
+      response.status_code = HttpStatus_HTTP_Version_Not_Supported;
+    }
+    else
+    {
+      if (request.method == HttpMethod_GET)
+      {
+        response.body = STR_LIT("<!DOCTYPE html>"
+                             "<html lang=\"en\">"
+                             "<head>"
+                             "    <meta charset=\"UTF-8\">"
+                             "    <title>200 OK</title>"
+                             "</head>"
+                             "<body>"
+                             "    <h1>Success (200 OK)</h1>"
+                             "    <p>The request was successful, and the server responded with the requested data.</p>"
+                             "</body>"
+                             "</html>\r\n");
+        response.content_length = response.body.length;
+        response.content_type = STR_LIT("text/html");
+        response.status_code = HttpStatus_OK;
+      }
+      else if (request.method == HttpMethod_POST)
+      {
+        response.body = request.body;
+        response.content_length = response.body.length;
+        response.content_type = request.content_type;
+        response.status_code = HttpStatus_OK;
+      }
+      else
+      {
+        response.status_code = HttpStatus_Method_Not_Allowed;
+      }
+    }
+    // String response = STR_LIT("HTTP/1.1 204 OK\n\n");
+    {
+
+      // TODO: Build the response buffer and send in one call
+      if (response.protocol_version == HttpProtocolVersion_1_1)
+      {
+        String protocol = STR_LIT("HTTP/1.1 ");
+        wrapped_send(new_socket_fd, protocol.text, protocol.length, 0);
+      }
+      else
+      {
+        InvalidCodePath;
+      }
+      String line_break = STR_LIT("\r\n");
+      String status_code = http_status_to_string(response.status_code);
+      wrapped_send(new_socket_fd, status_code.text, status_code.length, 0);
+      wrapped_send(new_socket_fd, line_break.text, line_break.length, 0);
+
+      String content_type_header = STR_LIT("Content-Type: ");
+      wrapped_send(new_socket_fd, content_type_header.text, content_type_header.length, 0);
+      wrapped_send(new_socket_fd, response.content_type.text, response.content_type.length, 0);
+      wrapped_send(new_socket_fd, line_break.text, line_break.length, 0);
+      
+      char temp_buffer[32] = {0};
+      String content_length_string = string_from_int((i64)response.content_length, temp_buffer, sizeof(temp_buffer));
+      String content_length_header = STR_LIT("Content-Length: ");
+      wrapped_send(new_socket_fd, content_length_header.text, content_length_header.length, 0);
+      wrapped_send(new_socket_fd, content_length_string.text, content_length_string.length, 0);
+      wrapped_send(new_socket_fd, line_break.text, line_break.length, 0);
+      for (u32 i = 0; i < response.header_count; ++i)
+      {
+        wrapped_send(new_socket_fd, response.headers[i].text, response.headers[i].length, 0);
+        wrapped_send(new_socket_fd, line_break.text, line_break.length, 0);
+      }
+      wrapped_send(new_socket_fd, line_break.text, line_break.length, 0);
+      wrapped_send(new_socket_fd, response.body.text, response.body.length, 0);
+      wrapped_send(new_socket_fd, line_break.text, line_break.length, 0);
+      printf("\n");
+    }
 
     temp_memory_end(temp_memory);
   }

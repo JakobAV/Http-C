@@ -22,7 +22,7 @@ typedef struct String
   char* text;
 } String;
 
-#define STR_LIT(text) (String){sizeof(text)-1, text}
+#define STR_LIT(text) (String){sizeof((text))-1, (text)}
 
 #define InvalidCodePath assert(0)
 #define NotImplemented assert(0)
