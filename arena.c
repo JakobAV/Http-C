@@ -1,3 +1,4 @@
+#pragma once
 #include "base_types.h"
 #include <sys/mman.h>
 
@@ -5,7 +6,7 @@
 
 typedef struct Arena
 {
-  u8* base;
+  u8 *base;
   u64 capacity;
   u64 commited;
   u64 current_offset;
@@ -28,6 +29,10 @@ void arena_init(Arena *arena)
   arena->commit_granularity = KB(4);
 
   arena->base = mmap(null, arena->capacity, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+  if (arena->base == MAP_FAILED)
+  {
+    InvalidCodePath;
+  }
 }
 
 void arena_free(Arena *arena)
@@ -44,13 +49,18 @@ void* arena_push(Arena *arena, u64 size)
     arena_init(arena);
   }
   u64 new_offset = ALIGN_TO(arena->current_offset + size, arena->alignment);
-  assert(new_offset <= arena->capacity);
+  if (new_offset > arena->capacity)
+  {
+    InvalidCodePath;
+  }
   if(new_offset > arena->commited)
   {
     void *new_allocation_start = arena->base + arena->commited;
     u64 commit_size = ALIGN_TO(new_offset - arena->commited, arena->commit_granularity);
-    i32 result = mprotect(new_allocation_start, commit_size, PROT_READ | PROT_WRITE);
-    assert(result == 0);
+    if (mprotect(new_allocation_start, commit_size, PROT_READ | PROT_WRITE) != 0)
+    {
+      InvalidCodePath;
+    }
     arena->commited += commit_size;
   }
   void *current_position = arena->base + arena->current_offset;
@@ -63,7 +73,7 @@ void arena_pop_to(Arena *arena, void *pointer)
   assert(arena);
   assert(((u64)pointer) >= (u64)arena->base);
   u64 new_offset = ((u64)pointer) - (u64)arena->base;
-  assert(new_offset < arena->commited);
+  assert(new_offset <= arena->commited);
 
   arena->current_offset = new_offset;
   if(new_offset + arena->commit_granularity * 4 < arena->commited)
@@ -71,8 +81,10 @@ void arena_pop_to(Arena *arena, void *pointer)
     u64 new_commited = ALIGN_TO(new_offset, arena->commit_granularity);
     u64 size = arena->commited - new_commited;
     void *target = arena->base + new_commited;
-    i32 result = mprotect(target, size, PROT_NONE);
-    assert(result == 0);
+    if (mprotect(target, size, PROT_NONE) != 0)
+    {
+      InvalidCodePath;
+    }
     arena->commited = new_commited;
   }
 }

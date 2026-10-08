@@ -1,3 +1,6 @@
+#pragma once
+#include "base_types.h"
+
 #define HTTP_STATUS_LIST \
   X(Continue, 100, "Continue") \
   X(Switching_protocols, 101, "Switching protocols") \
@@ -65,6 +68,7 @@
 
 typedef enum HttpStatus
 {
+  HttpStatus_None = 0,
 #define X(name, code, _) HttpStatus_##name = code,
   HTTP_STATUS_LIST
 #undef X

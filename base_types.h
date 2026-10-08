@@ -1,30 +1,38 @@
 #pragma once
 #include <assert.h>
+#include <stdint.h>
 
-typedef signed char i8;
-typedef signed short i16;
-typedef signed int i32;
-typedef signed long long i64;
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
 
-typedef unsigned char u8;
-typedef unsigned short u16;
-typedef unsigned long int u32;
-typedef unsigned long long u64;
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
 
 typedef float f32;
 typedef double f64;
 
 typedef u32 b32;
 
+static_assert(sizeof(i8) == 1 && sizeof(u8) == 1, "8-bit types must be 1 byte");
+static_assert(sizeof(i16) == 2 && sizeof(u16) == 2, "16-bit types must be 2 bytes");
+static_assert(sizeof(i32) == 4 && sizeof(u32) == 4, "32-bit types must be 4 bytes");
+static_assert(sizeof(i64) == 8 && sizeof(u64) == 8, "64-bit types must be 8 bytes");
+static_assert(sizeof(f32) == 4 && sizeof(f64) == 8, "Float types must be 4 and 8 bytes");
+
 typedef struct String
 {
   i64 length;
-  char* text;
+  char *text;
 } String;
 
 #define STR_LIT(text) (String){sizeof((text))-1, (text)}
 
-#define InvalidCodePath assert(0)
+// Crashes in release builds too: if this is reached, the program state can't be trusted
+#define InvalidCodePath __builtin_trap()
 #define NotImplemented assert(0)
 #define IsAligned(pointer, bytes) (((u64)pointer % bytes) == 0)
 #define AssertAligned(pointer, bytes) assert(IsAligned(pointer, bytes))
