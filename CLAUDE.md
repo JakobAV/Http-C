@@ -36,3 +36,7 @@ There is no test suite, linter or Makefile. Check changes by building cleanly (t
 ## Coding guide
 
 **Follow `CODING_GUIDE.md` for all code changes.** It covers the file and build model, types, strings, memory, error handling (the `InvalidCodePath`, `assert` and `UnhandledInput` tiers) and style. Its "Known deviations" list tracks existing code that doesn't conform yet.
+
+## Planned work
+
+`DEVELOPMENT_PLAN.md` describes porting code from an old Windows C++ project (arena helpers, file reading, JSON parser, work queue) and moving all OS and libc calls behind a platform layer (`os.h` + `os_<platform>.c`). `CodeToPort/` holds those original files for reference only. They are Windows C++, are never compiled or included, and are removed once the port is done.
