@@ -9,7 +9,18 @@
 
 #define DEFAULT_PORT 8888
 #define READ_CHUNK_SIZE KB(4)
+#ifndef MAX_REQUEST_SIZE
 #define MAX_REQUEST_SIZE MB(1)
+#endif
+// The whole request must arrive, and the whole response be taken by the client, within these times, so a slow
+// or idle client can't hold a worker for longer. They're totals, not per read or send, so trickling a byte at a
+// time doesn't extend them.
+#ifndef REQUEST_TIMEOUT_MILLISECONDS
+#define REQUEST_TIMEOUT_MILLISECONDS 10000
+#endif
+#ifndef RESPONSE_TIMEOUT_MILLISECONDS
+#define RESPONSE_TIMEOUT_MILLISECONDS 10000
+#endif
 
 #define HTTP_METHOD_LIST \
   X(GET) \
@@ -225,7 +236,8 @@ HttpRequest parse_http_request(HttpMessageParser *message_parser)
   return request;
 }
 
-// Reads the headers and Content-Length bytes of body into the arena, then parses the request.
+// Reads the headers and Content-Length bytes of body into the arena, then parses the request. A request that
+// doesn't arrive within REQUEST_TIMEOUT_MILLISECONDS gets a 408.
 // Returns false if the connection failed and no response can be sent. Errors in the request
 // itself are reported through message_parser->error.
 b32 read_http_request(OsSocket socket, Arena *arena, HttpMessageParser *message_parser, HttpRequest *request)
@@ -236,6 +248,7 @@ b32 read_http_request(OsSocket socket, Arena *arena, HttpMessageParser *message_
   // Offset just past the "\r\n\r\n" that ends the headers, 0 until it has been read
   u64 head_length = 0;
   u64 request_length = 0;
+  u64 deadline = os_get_time_milliseconds() + REQUEST_TIMEOUT_MILLISECONDS;
   while (head_length == 0 || length < request_length)
   {
     if (length == capacity)
@@ -257,13 +270,21 @@ b32 read_http_request(OsSocket socket, Arena *arena, HttpMessageParser *message_
       }
       capacity += READ_CHUNK_SIZE;
     }
-    i64 bytes_read = os_socket_read(socket, buffer + length, capacity - length);
-    if (bytes_read < 0)
+    u64 bytes_read = 0;
+    OsSocketStatus status = os_socket_read(socket, buffer + length, capacity - length, deadline, &bytes_read);
+    if (status == OsSocketStatus_Timed_Out)
+    {
+      // Not UnhandledInput: a slow client is expected, and debug builds shouldn't assert on it
+      os_print("Request timed out\n");
+      message_parser->error = HttpStatus_Request_Timeout;
+      return true;
+    }
+    if (status == OsSocketStatus_Error)
     {
       os_print("Failed to read from socket\n");
       return false;
     }
-    if (bytes_read == 0)
+    if (status == OsSocketStatus_Closed)
     {
       // The client closed the connection before sending a complete request
       return false;
@@ -310,47 +331,71 @@ b32 http_content_type_is(String content_type, String media_type)
   return strings_are_equal_ignore_case(type, media_type);
 }
 
+typedef struct HttpSender
+{
+  OsSocket socket;
+  u64 deadline;
+  // Set by the first failed send. Later sends are skipped, since the connection is closed after.
+  b32 failed;
+} HttpSender;
+
 // With several worker threads, the DEBUG_LOG echo of different responses can interleave. Each print is
 // thread-safe, so that's acceptable for debug output.
-b32 send_string(OsSocket socket, String string)
+void send_string(HttpSender *sender, String string)
 {
+  if (sender->failed)
+  {
+    return;
+  }
 #ifdef DEBUG_LOG
   os_print("%.*s", (i32)string.length, string.text);
 #endif
-  return os_socket_send(socket, string.text, (u64)string.length);
+  OsSocketStatus status = os_socket_send(sender->socket, string.text, (u64)string.length, sender->deadline);
+  if (status != OsSocketStatus_Ok)
+  {
+    sender->failed = true;
+    if (status == OsSocketStatus_Timed_Out)
+    {
+      os_print("Response timed out\n");
+    }
+  }
 }
 
-void send_http_response(OsSocket socket, HttpResponse *response)
+// Gives up when the client hasn't taken the whole response by deadline (see os_get_time_milliseconds)
+void send_http_response(OsSocket socket, HttpResponse *response, u64 deadline)
 {
   // TODO: Build the response buffer and send in one call
-  // Failed sends are ignored: once the connection is broken the remaining sends fail too, and it's closed after.
   if (response->protocol_version != HttpProtocolVersion_1_1)
   {
     InvalidCodePath;
   }
+  HttpSender sender = {
+    .socket = socket,
+    .deadline = deadline,
+  };
   String line_break = STR_LIT("\r\n");
-  send_string(socket, STR_LIT("HTTP/1.1 "));
-  send_string(socket, http_status_to_string(response->status_code));
-  send_string(socket, line_break);
+  send_string(&sender, STR_LIT("HTTP/1.1 "));
+  send_string(&sender, http_status_to_string(response->status_code));
+  send_string(&sender, line_break);
 
   if (response->content_type.length > 0)
   {
-    send_string(socket, STR_LIT("Content-Type: "));
-    send_string(socket, response->content_type);
-    send_string(socket, line_break);
+    send_string(&sender, STR_LIT("Content-Type: "));
+    send_string(&sender, response->content_type);
+    send_string(&sender, line_break);
   }
 
   char temp_buffer[32] = {0};
-  send_string(socket, STR_LIT("Content-Length: "));
-  send_string(socket, string_from_int((i64)response->content_length, temp_buffer, sizeof(temp_buffer)));
-  send_string(socket, line_break);
+  send_string(&sender, STR_LIT("Content-Length: "));
+  send_string(&sender, string_from_int((i64)response->content_length, temp_buffer, sizeof(temp_buffer)));
+  send_string(&sender, line_break);
   for (u32 i = 0; i < response->header_count; ++i)
   {
-    send_string(socket, response->headers[i]);
-    send_string(socket, line_break);
+    send_string(&sender, response->headers[i]);
+    send_string(&sender, line_break);
   }
-  send_string(socket, line_break);
-  send_string(socket, response->body);
+  send_string(&sender, line_break);
+  send_string(&sender, response->body);
 #ifdef DEBUG_LOG
   os_print("\n");
 #endif
@@ -425,7 +470,7 @@ WorkQueueCallback(handle_connection)
   if (read_http_request(socket, &request_arena, &message_parser, &request))
   {
     HttpResponse response = handle_http_request(&message_parser, &request);
-    send_http_response(socket, &response);
+    send_http_response(socket, &response, os_get_time_milliseconds() + RESPONSE_TIMEOUT_MILLISECONDS);
   }
   os_socket_close(socket);
   temp_memory_end(temp_memory);
@@ -463,12 +508,14 @@ i32 http_server_run(void)
     os_print("New connection\n");
     if (!work_queue_add_entry(&connection_queue, handle_connection, (void *)(uintptr_t)connection.handle))
     {
-      // The request isn't read, so the client may see a reset instead of the response if it's still sending
+      // The request isn't read, so the client may see a reset instead of the response if it's still sending.
+      // A deadline of now: the small response normally fits in the socket buffer, and the accept loop must
+      // never wait on a client.
       HttpResponse response = {
         .protocol_version = HttpProtocolVersion_1_1,
         .status_code = HttpStatus_Service_Unavailable,
       };
-      send_http_response(connection, &response);
+      send_http_response(connection, &response, os_get_time_milliseconds());
       os_socket_close(connection);
     }
   }

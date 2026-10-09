@@ -17,6 +17,10 @@ void os_release_memory(void *memory, u64 size);
 // Reads the whole file into arena. Returns false if it can't be opened or read (missing file, permissions, ...).
 b32 os_read_entire_file(Arena *arena, String path, String *result);
 
+// Time
+// A monotonic clock: only the difference between two calls is meaningful
+u64 os_get_time_milliseconds(void);
+
 // Number parsing
 // Converts the whole text to a f64, with '.' as the decimal point. Returns false if the text isn't a number,
 // is too long or is out of range. Callers validate their own number syntax first.
@@ -64,10 +68,23 @@ typedef struct OsSocket
 // Listens on every interface. Prints the reason and returns false on failure.
 b32 os_socket_listen(u16 port, OsSocket *result);
 b32 os_socket_accept(OsSocket listener, OsSocket *result);
-// Returns the number of bytes read, 0 when the peer has closed the connection, or -1 on an error
-i64 os_socket_read(OsSocket socket, void *buffer, u64 size);
-// Sends all of buffer. Returns false if the connection failed. Never raises SIGPIPE or an equivalent.
-b32 os_socket_send(OsSocket socket, void *buffer, u64 size);
+typedef enum OsSocketStatus
+{
+  OsSocketStatus_Ok = 0,
+  OsSocketStatus_Closed,
+  OsSocketStatus_Timed_Out,
+  OsSocketStatus_Error,
+} OsSocketStatus;
+
+// Deadlines are absolute times from os_get_time_milliseconds. A deadline in the past still lets a read or send
+// go through if it doesn't have to wait.
+
+// Waits until the deadline at most for data, then reads what is available (at least 1 byte) into buffer.
+// *bytes_read is only set for OsSocketStatus_Ok.
+OsSocketStatus os_socket_read(OsSocket socket, void *buffer, u64 size, u64 deadline_milliseconds, u64 *bytes_read);
+// Sends all of buffer, or times out if the peer doesn't take it all by the deadline. Never raises SIGPIPE or an
+// equivalent.
+OsSocketStatus os_socket_send(OsSocket socket, void *buffer, u64 size, u64 deadline_milliseconds);
 void os_socket_close(OsSocket socket);
 
 // Process setup, such as crash handlers. Call it first thing in main.

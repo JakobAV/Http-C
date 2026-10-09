@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <float.h>
+#include <poll.h>
 #include <pthread.h>
 #include <semaphore.h>
 #include <signal.h>
@@ -16,6 +17,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "base_types.h"
@@ -120,6 +122,17 @@ b32 os_read_entire_file(Arena *arena, String path, String *result)
   }
   *result = (String){(i64)bytes_read, buffer};
   return true;
+}
+
+u64 os_get_time_milliseconds(void)
+{
+  struct timespec time = {0};
+  if (clock_gettime(CLOCK_MONOTONIC, &time) != 0)
+  {
+    // Only fails for an unsupported clock, and CLOCK_MONOTONIC always exists on Linux
+    InvalidCodePath;
+  }
+  return (u64)time.tv_sec * 1000 + (u64)time.tv_nsec / 1000000;
 }
 
 b32 os_parse_f64(String text, f64 *result)
@@ -305,37 +318,97 @@ b32 os_socket_accept(OsSocket listener, OsSocket *result)
   }
 }
 
-i64 os_socket_read(OsSocket socket, void *buffer, u64 size)
+// Waits until the socket is ready for events or the deadline passes
+OsSocketStatus linux_socket_wait(i32 fd, i16 events, u64 deadline_milliseconds)
 {
+  struct pollfd poll_fd = {
+    .fd = fd,
+    .events = events,
+  };
   while (true)
   {
-    i64 bytes_read = read((i32)socket.handle, buffer, size);
-    if (bytes_read >= 0 || errno != EINTR)
+    // Recomputed on every pass, so a signal doesn't extend the deadline
+    u64 now = os_get_time_milliseconds();
+    u64 time_left = now < deadline_milliseconds ? deadline_milliseconds - now : 0;
+    i32 ready = poll(&poll_fd, 1, time_left > INT32_MAX ? INT32_MAX : (i32)time_left);
+    if (ready > 0)
     {
-      return bytes_read < 0 ? -1 : bytes_read;
+      // Also reported for a closed or failed connection, which the following read or send then detects
+      return OsSocketStatus_Ok;
+    }
+    if (ready == 0)
+    {
+      if (time_left < INT32_MAX)
+      {
+        return OsSocketStatus_Timed_Out;
+      }
+      continue;
+    }
+    if (errno != EINTR)
+    {
+      return OsSocketStatus_Error;
     }
   }
 }
 
-b32 os_socket_send(OsSocket socket, void *buffer, u64 size)
+OsSocketStatus os_socket_read(OsSocket socket, void *buffer, u64 size, u64 deadline_milliseconds, u64 *bytes_read)
 {
+  assert(bytes_read && size > 0);
+  i32 fd = (i32)socket.handle;
+  OsSocketStatus wait_status = linux_socket_wait(fd, POLLIN, deadline_milliseconds);
+  if (wait_status != OsSocketStatus_Ok)
+  {
+    return wait_status;
+  }
+  while (true)
+  {
+    i64 count = read(fd, buffer, size);
+    if (count > 0)
+    {
+      *bytes_read = (u64)count;
+      return OsSocketStatus_Ok;
+    }
+    if (count == 0)
+    {
+      return OsSocketStatus_Closed;
+    }
+    if (errno != EINTR)
+    {
+      return OsSocketStatus_Error;
+    }
+  }
+}
+
+OsSocketStatus os_socket_send(OsSocket socket, void *buffer, u64 size, u64 deadline_milliseconds)
+{
+  i32 fd = (i32)socket.handle;
   u8 *at = buffer;
   while (size > 0)
   {
-    // MSG_NOSIGNAL: a client that disconnects early must not kill the server with SIGPIPE
-    i64 bytes_sent = send((i32)socket.handle, at, size, MSG_NOSIGNAL);
-    if (bytes_sent < 0)
+    // MSG_NOSIGNAL: a client that disconnects early must not kill the server with SIGPIPE.
+    // MSG_DONTWAIT: a blocking send waits until the whole buffer fits, which could be forever.
+    i64 bytes_sent = send(fd, at, size, MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (bytes_sent >= 0)
     {
-      if (errno == EINTR)
-      {
-        continue;
-      }
-      return false;
+      at += bytes_sent;
+      size -= bytes_sent;
+      continue;
     }
-    at += bytes_sent;
-    size -= bytes_sent;
+    if (errno == EINTR)
+    {
+      continue;
+    }
+    if (errno != EAGAIN && errno != EWOULDBLOCK)
+    {
+      return OsSocketStatus_Error;
+    }
+    OsSocketStatus wait_status = linux_socket_wait(fd, POLLOUT, deadline_milliseconds);
+    if (wait_status != OsSocketStatus_Ok)
+    {
+      return wait_status;
+    }
   }
-  return true;
+  return OsSocketStatus_Ok;
 }
 
 void os_socket_close(OsSocket socket)

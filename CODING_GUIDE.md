@@ -78,6 +78,7 @@ Rules:
   - **400 Bad Request**: malformed syntax.
   - **501 Not Implemented**: a valid but unknown or unsupported method.
   - **505 HTTP Version Not Supported**: an unsupported protocol version.
+  - **408 Request Timeout**: the request didn't arrive within `REQUEST_TIMEOUT_MILLISECONDS`. This is set directly, not through `UnhandledInput`, so debug builds don't assert on slow clients.
   - **413/431**: a body or headers that are too large.
   - **5xx in general**: faults on the server side.
 - In the platform layer, check the return value of every system call (`socket`, `read`, `send`, `mprotect`, ...) and turn failures into return values. In shared code, check the platform functions' results. Recover where you can, for example by dropping the connection and continuing. A failure that leaves our own state corrupt is an `InvalidCodePath`.
