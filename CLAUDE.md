@@ -47,4 +47,4 @@ There is no linter or Makefile. The automated tests (`tests/test_main.c`, a sepa
 
 ## Planned work
 
-`DEVELOPMENT_PLAN.md` describes porting code from an old Windows C++ project (arena helpers, file reading, JSON parser, work queue) and moving all OS and libc calls behind a platform layer (`os.h` + `os_<platform>.c`). `CodeToPort/` holds those original files for reference only. They are Windows C++, are never compiled or included, and are removed once the port is done.
+`DEVELOPMENT_PLAN.md` describes the completed port of an old Windows C++ project and the move behind the platform layer. Its "Status" section lists where the implementation differs from the plan, and "Future work" lists what's next: profiling, a Windows backend (`os_win32.c`) and static file serving.

@@ -1,6 +1,16 @@
 # Development Plan: Porting ScratchPad Code
 
-This plan ports useful parts of an old Windows C++ scratch project (`/home/yago/Projects/ScrachPad/ScratchPad`) to this C11 codebase, and makes the codebase platform-agnostic along the way. The original files are copied to `CodeToPort/` for reference. They're Windows C++, are not compiled, and the folder should be deleted once the port is done.
+This plan ports useful parts of an old Windows C++ scratch project (`/home/yago/Projects/ScrachPad/ScratchPad`) to this C11 codebase, and makes the codebase platform-agnostic along the way. The original files were copied to `CodeToPort/` for reference and deleted once the port was done. They're still in the ScratchPad folder.
+
+## Status
+
+All five phases are done. Where the implementation differs from the plan below:
+
+- **`arena.h`:** the arena types, macros and declarations moved into a header (phase 2), so `os_linux.c`, which is included first, can call the arena.
+- **`os_print`** was added in phase 3 instead of 5, because the tests needed it.
+- **JSON scratch use:** no linked list was needed. Each nested object or array resets scratch before returning, so every level's element list stays contiguous. The getters take `JsonObject *`/`JsonArray *` rather than `JsonNode *`, because elements of typed arrays aren't nodes.
+- **Work queue:** a worker copies an entry only after claiming it. A per-slot `in_use` flag stops the producer from reusing the slot before that copy is done. Copying before the compare-exchange, as the original did, is a data race that ThreadSanitizer flagged.
+- **Extra:** HTTP header names are matched case-insensitively. The 503 for a full queue is sent without reading the request, so a client that's still sending may see a connection reset instead.
 
 All ported code must follow `CODING_GUIDE.md`. In particular:
 - C11, not C++. No references, overloads, default arguments, `nullptr` or `bool`. Overloads get distinct names.
