@@ -59,7 +59,7 @@ The phases are ordered by dependency. Phase 1 sets up the platform layer that ev
 
 | Area | Functions | Added in |
 |---|---|---|
-| Virtual memory | `os_get_page_size`, `os_reserve_memory`, `os_commit_memory`, `os_decommit_memory`, `os_release_memory` | Phase 1 |
+| Virtual memory | `os_get_page_size`, `os_reserve_memory`, `os_commit_memory`, `os_decommit_memory` (Linux: `MADV_FREE` + `PROT_NONE`), `os_release_memory` | Phase 1 |
 | Files | `os_read_entire_file` | Phase 2 |
 | Number parsing | `os_parse_f64` (wraps `strtod`) | Phase 3 |
 | Threads and sync | `os_get_processor_count`, `os_thread_create`, `os_semaphore_init/post/wait`, atomics (`atomic_load_acquire_u32`, `atomic_store_release_u32`, `atomic_compare_exchange_u32`, `atomic_increment_u32`) | Phase 4 |
@@ -73,21 +73,54 @@ Each implementation handles OS details inside the function: `EINTR` retries, `MS
 
 ## Phase 1: Platform layer + arena helpers
 
+### Platform layer
+
 - Create `os.h` and `os_linux.c` with the virtual-memory primitives. `arena.c` calls these instead of `mmap`/`mprotect`/`munmap` directly. The arena logic itself (reserve, commit on demand, decommit threshold, temp memory) stays shared.
-- `arena_push_aligned(Arena *arena, u64 size, u32 alignment)` pushes with a one-off alignment without changing `arena->alignment`. Our `arena_push` aligns the *end* offset, so the start is only aligned as a side effect of earlier pushes. `arena_push_aligned` must align the *start* explicitly.
-- `PushType(arena, type)`, `PushArray(arena, type, count)` and `PushArrayAligned(arena, type, count, alignment)` macros.
-- A scratch arena per thread: `Arena *arena_get_scratch(void)` backed by a thread-local `Arena` (a zeroed arena is valid; use the thread-local macro from `base_types.h`). Callers wrap uses in `temp_memory_begin`/`temp_memory_end`. Scratch memory must never be the same arena as a function's output arena.
+- **Include order:** the `#if defined(__linux__)` block is the **first** include in `main.c`, before the existing system headers and `base_types.h`. `os_linux.c` starts with `#define _DEFAULT_SOURCE` and then includes its system headers, and only then `base_types.h` and `os.h`. Reasons:
+  - Under `-std=c11`, glibc hides `madvise`, `MADV_*` and `getpagesize` unless a feature-test macro is defined before the *first* system header. This was checked: they don't compile otherwise.
+  - System headers never see our `true`/`false`/`null` macros.
+- `os_decommit_memory` on Linux is `madvise(MADV_FREE)` followed by `mprotect(PROT_NONE)`. The current code only calls `mprotect(PROT_NONE)`, which changes permissions but **doesn't release the pages**: RSS stays the same and the old data is still there after recommitting. Benchmark (64 KB commit/touch/decommit cycle):
+
+  | Strategy | ns/cycle | Memory returned to the OS |
+  |---|---|---|
+  | No decommit | ~20 | No |
+  | `mprotect` only (current) | ~1,500 | No |
+  | `MADV_FREE` + `mprotect` | ~2,600 | Lazily, under memory pressure |
+  | `MADV_DONTNEED` + `mprotect` | ~6,200 | Immediately |
+
+  `MADV_FREE` is designed for repeated free/reuse: the kernel only reclaims the pages when it needs memory. The arena's decommit threshold already keeps this off the hot path. `PROT_NONE` is kept so that touching popped memory crashes. After `MADV_FREE`, recommitted pages contain either old data or zeros, so the shared code must not assume either.
+- `commit_granularity` comes from `os_get_page_size()` instead of the hardcoded `KB(4)`. On a kernel with 16 KB pages, a 4 KB `mprotect` fails.
+
+### Arena changes
+
+- **Pushes align the start, not the end.** Today `arena_push` aligns the *end* offset, so a start is aligned only because the previous push ended on a boundary. Once there's a push with a different alignment, that breaks: `arena_push_aligned(size 3, align 4)` ends at offset 3, and the next `arena_push` would return offset 3. Every push aligns its start, as the original did. The request read loop stays contiguous because its 4 KB chunks are a multiple of the alignment.
+- **Zeroing.** The base functions are `arena_push_no_zero(Arena *arena, u64 size)` and `arena_push_aligned_no_zero(Arena *arena, u64 size, u32 alignment)`. `arena_push` and `arena_push_aligned` call them and then `memory_set` the result to zero. Use `_no_zero` only when the caller overwrites the whole allocation straight away, such as the request read buffer.
+- `arena_push_aligned` pushes with a one-off alignment without changing `arena->alignment`. Assert that the alignment is a power of two.
+- **Overflow checks:** the capacity check is `size > capacity - aligned_offset`, not `offset + size > capacity`, so a huge `size` can't wrap around it. The array macros check `count * sizeof(type)` for overflow before pushing, because phase 3 sizes arrays from untrusted input.
+- Fix `ALIGN_TO`: its `% alignment` isn't parenthesised.
+- Macros: `PushType`, `PushArray` and `PushArrayAligned` zero the memory. `PushTypeNoZero`, `PushArrayNoZero` and `PushArrayAlignedNoZero` don't.
+
+### Scratch arenas
+
+- **Two** scratch arenas per thread, backed by a thread-local `Arena scratch_arenas[2]` (a zeroed arena is valid; use the thread-local macro from `base_types.h`).
+- `Arena *arena_get_scratch(Arena *conflict)` returns the scratch arena that isn't `conflict`. A function that writes into an output arena and also uses scratch passes its output arena as `conflict`. This matters when the caller's output arena is itself a scratch arena. Pass `null` when there is no output arena.
+- Callers wrap uses in `temp_memory_begin`/`temp_memory_end`.
+- Scratch memory is still a stack. Recursive code (the JSON parser's nested arrays) can't build one contiguous list in scratch while a recursive call pushes to the same arena. Phase 3 has to handle this, for example with a linked list of elements that gets flattened at the end.
+
+### Other
+
 - `ArrayCount(array)` in `base_types.h`, plus the compiler-difference block (trap, thread-local).
 - `memory_copy` and `memory_set` in shared code (simple loops), so ported code doesn't need `<string.h>`.
 - `min`, `max` and `clamp` are **not** copied. The originals are broken: `max` is missing a closing parenthesis and `clamp` swaps its minimum and maximum. Add correct versions only when something needs them.
-- Add a "Platform layer" section to `CODING_GUIDE.md` with the rules above. List the existing direct OS and libc calls in `main.c` and `string_utils.c` under "Known deviations" until phase 5.
+- Add a "Platform layer" section to `CODING_GUIDE.md` with the rules above, and document `_no_zero` and `arena_get_scratch` under "Memory". List the existing direct OS and libc calls in `main.c` under "Known deviations" until phase 5. (`string_utils.c` has none.)
+- Update the arena description in `CLAUDE.md`. It currently says `mprotect` and 4 KB granules.
 
 **Done when:** the build is warning-free, `arena.c` has no system includes, and existing behaviour is unchanged (GET/POST with `curl`).
 
 ## Phase 2: Read entire file
 
 - `b32 os_read_entire_file(Arena *arena, String path, String *result)` in `os_linux.c`, using `open`/`fstat`/`read` into the arena.
-- `open` needs a null-terminated path. Copying `path` with a terminator into the scratch arena is a platform detail, so it stays inside the function.
+- `open` needs a null-terminated path. Copying `path` with a terminator into a scratch arena (`arena_get_scratch(arena)`) is a platform detail, so it stays inside the function.
 - Loop on `read` until the whole file is read, handling partial reads and `EINTR`. The original used Windows text-mode `fopen` and ignored short reads.
 - Report failures through the return value (missing file, permissions). These are environment errors, not `InvalidCodePath`.
 
@@ -117,7 +150,7 @@ The structure stays the same: a tokenizer, then a recursive descent parser that 
   - Decode `\" \\ \/ \b \f \n \r \t \uXXXX` (to UTF-8, including surrogate pairs).
   - Zero-copy: a string without escapes is a `String` that points into the source text. Only strings with escapes are decoded into the arena. Drop the null terminator.
 - **Numbers:** validate the JSON number grammar in shared code (reject `01`, `1.`, `.5`, a lone `-`). The original's `pow(0.1, n)` fraction maths loses precision. Convert the validated token with `os_parse_f64`. The Linux version copies it into a bounded stack buffer and calls `strtod`; we never call `setlocale`, so `.` is the decimal point. Correct float conversion is hard to write ourselves, so it's delegated to libc behind the platform layer.
-- **Arrays:** the original required all elements to have the type of the first, and crashed on `[null]` or mixed arrays. Collect elements as `JsonNode`s in the scratch arena. At the end, store a homogeneous array as a compact typed array (keeping the fast typed getters) and anything else as a `JsonNode` array (a new array type).
+- **Arrays:** the original required all elements to have the type of the first, and crashed on `[null]` or mixed arrays. Collect elements as `JsonNode`s in a scratch arena (`arena_get_scratch(arena)`), using a linked list or chunks so nested arrays don't break contiguity (see phase 1). At the end, store a homogeneous array as a compact typed array (keeping the fast typed getters) and anything else as a `JsonNode` array (a new array type).
 - **Hashing:** port `HashString` (Jenkins one-at-a-time) to take a `String` (length-based) instead of a null-terminated string.
 
 ### HTTP integration
@@ -159,7 +192,7 @@ The queue's logic is application architecture, so it lives in shared code (`work
 
 ### Server changes
 
-- `request_arena` is a single global today. Each worker needs its own: a thread-local arena, or one passed in through the thread startup struct. The scratch arena from phase 1 is already per thread.
+- `request_arena` is a single global today. Each worker needs its own: a thread-local arena, or one passed in through the thread startup struct. The scratch arenas from phase 1 are already per thread.
 - The accept loop pushes the connection as the work item's data. The worker reads, handles and responds, then closes the connection and resets its arena.
 - `DEBUG_LOG` output from several threads will interleave. Each print call is thread-safe, but the parts of one response can mix with another's. That's acceptable for debug output, but note it in the code.
 
