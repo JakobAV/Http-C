@@ -4,6 +4,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <float.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <stdatomic.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -149,4 +152,92 @@ void os_print(char *format, ...)
   va_start(arguments, format);
   vprintf(format, arguments);
   va_end(arguments);
+}
+
+u32 os_get_processor_count(void)
+{
+  i64 count = sysconf(_SC_NPROCESSORS_ONLN);
+  return count > 0 ? (u32)count : 1;
+}
+
+typedef struct LinuxThread
+{
+  pthread_t handle;
+  OsThreadProc *proc;
+  void *data;
+} LinuxThread;
+
+static_assert(sizeof(LinuxThread) <= sizeof(OsThread), "OsThread is too small for LinuxThread");
+static_assert(_Alignof(LinuxThread) <= _Alignof(OsThread), "OsThread is not aligned enough for LinuxThread");
+
+void *linux_thread_start(void *parameter)
+{
+  LinuxThread *thread = parameter;
+  thread->proc(thread->data);
+  return null;
+}
+
+b32 os_thread_create(OsThread *thread, OsThreadProc *proc, void *data)
+{
+  assert(thread && proc);
+  LinuxThread *linux_thread = (LinuxThread *)thread->storage;
+  linux_thread->proc = proc;
+  linux_thread->data = data;
+  if (pthread_create(&linux_thread->handle, null, linux_thread_start, linux_thread) != 0)
+  {
+    return false;
+  }
+  pthread_detach(linux_thread->handle);
+  return true;
+}
+
+static_assert(sizeof(sem_t) <= sizeof(OsSemaphore), "OsSemaphore is too small for sem_t");
+static_assert(_Alignof(sem_t) <= _Alignof(OsSemaphore), "OsSemaphore is not aligned enough for sem_t");
+
+b32 os_semaphore_init(OsSemaphore *semaphore, u32 initial_count)
+{
+  return sem_init((sem_t *)semaphore->storage, 0, initial_count) == 0;
+}
+
+void os_semaphore_post(OsSemaphore *semaphore)
+{
+  if (sem_post((sem_t *)semaphore->storage) != 0)
+  {
+    // Only fails for an invalid semaphore or an overflowing count
+    InvalidCodePath;
+  }
+}
+
+void os_semaphore_wait(OsSemaphore *semaphore)
+{
+  while (sem_wait((sem_t *)semaphore->storage) != 0)
+  {
+    if (errno != EINTR)
+    {
+      InvalidCodePath;
+    }
+  }
+}
+
+// The shared code uses plain u32s, which have the same layout as _Atomic u32 here
+static_assert(sizeof(_Atomic u32) == sizeof(u32), "_Atomic u32 must have the layout of u32");
+
+u32 atomic_load_acquire_u32(u32 volatile *value)
+{
+  return atomic_load_explicit((_Atomic u32 volatile *)value, memory_order_acquire);
+}
+
+void atomic_store_release_u32(u32 volatile *value, u32 new_value)
+{
+  atomic_store_explicit((_Atomic u32 volatile *)value, new_value, memory_order_release);
+}
+
+b32 atomic_compare_exchange_u32(u32 volatile *value, u32 expected, u32 desired)
+{
+  return atomic_compare_exchange_strong((_Atomic u32 volatile *)value, &expected, desired);
+}
+
+u32 atomic_increment_u32(u32 volatile *value)
+{
+  return atomic_fetch_add((_Atomic u32 volatile *)value, 1) + 1;
 }

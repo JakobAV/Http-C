@@ -11,6 +11,7 @@
 #include "../memory_utils.c"
 #include "../arena.c"
 #include "../json.c"
+#include "../work_queue.c"
 
 // A large real-world document. It isn't part of the repository, so the test is skipped if it's missing.
 #ifndef TEST_JSON_PATH
@@ -33,6 +34,8 @@ void test_check(b32 passed, char *expression, i32 line)
 }
 
 Arena test_arena;
+// For memory that outlives a test, such as a work queue whose threads keep running
+Arena permanent_test_arena;
 
 JsonDocument parse(String text)
 {
@@ -374,6 +377,60 @@ void test_large_file(void)
   os_print("  parsed %d bytes, %u root members\n", (i32)text.length, root ? root->length : 0);
 }
 
+u32 volatile work_counter;
+u32 volatile work_sum;
+
+void add_to_counter(WorkQueue *queue, void *data)
+{
+  (void)queue;
+  atomic_increment_u32(&work_counter);
+  // Every value is added once, so the sum shows that no entry was run twice or skipped
+  u32 value = (u32)(uintptr_t)data;
+  for (u32 i = 0; i < value % 7; ++i)
+  {
+    atomic_increment_u32(&work_sum);
+  }
+}
+
+void test_work_queue(void)
+{
+  // Without worker threads the producer does all the work, so this part is deterministic
+  WorkQueue *queue = PushType(&test_arena, WorkQueue);
+  Check(work_queue_init(queue, 0, null));
+  u32 added = 0;
+  while (work_queue_add_entry(queue, add_to_counter, (void *)(uintptr_t)added))
+  {
+    added++;
+  }
+  Check(added == WORK_QUEUE_SIZE - 1);
+  work_queue_complete_all(queue);
+  Check(work_counter == added);
+  Check(work_queue_add_entry(queue, add_to_counter, (void *)(uintptr_t)0));
+  work_queue_complete_all(queue);
+  Check(work_counter == added + 1);
+
+  // With workers. A full queue is drained by the producer helping out.
+  work_counter = 0;
+  work_sum = 0;
+  WorkQueue *threaded = PushType(&permanent_test_arena, WorkQueue);
+  u32 thread_count = 4;
+  OsThread *threads = PushArray(&permanent_test_arena, OsThread, thread_count);
+  Check(work_queue_init(threaded, thread_count, threads));
+  u32 entry_count = 200000;
+  u32 expected_sum = 0;
+  for (u32 i = 0; i < entry_count; ++i)
+  {
+    while (!work_queue_add_entry(threaded, add_to_counter, (void *)(uintptr_t)i))
+    {
+      work_queue_do_next_entry(threaded);
+    }
+    expected_sum += i % 7;
+  }
+  work_queue_complete_all(threaded);
+  Check(atomic_load_acquire_u32(&work_counter) == entry_count);
+  Check(atomic_load_acquire_u32(&work_sum) == expected_sum);
+}
+
 int main(void)
 {
   struct
@@ -390,6 +447,7 @@ int main(void)
     {"fuzz", test_fuzz},
     {"scratch output", test_scratch_output},
     {"large file", test_large_file},
+    {"work queue", test_work_queue},
   };
   for (u32 i = 0; i < ArrayCount(tests); ++i)
   {

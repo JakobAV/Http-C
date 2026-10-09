@@ -20,6 +20,7 @@
 #include "http_status.c"
 #include "arena.c"
 #include "json.c"
+#include "work_queue.c"
 
 #define DEFAULT_PORT 8888
 #define READ_CHUNK_SIZE KB(4)
@@ -355,7 +356,9 @@ b32 read_http_request(i32 socket_fd, Arena *arena, HttpMessageParser *message_pa
   return true;
 }
 
-// MSG_NOSIGNAL: a client that disconnects early must not kill the server with SIGPIPE
+// MSG_NOSIGNAL: a client that disconnects early must not kill the server with SIGPIPE.
+// With several worker threads, the DEBUG_LOG echo of different responses can interleave. Each print is
+// thread-safe, so that's acceptable for debug output.
 b32 send_string(i32 socket_fd, String string)
 {
 #ifdef DEBUG_LOG
@@ -429,7 +432,10 @@ void send_http_response(i32 socket_fd, HttpResponse *response)
 i32 server_fd = -1;
 
 Arena permanent_arena;
-Arena request_arena;
+// Each worker thread handles one connection at a time and resets its arena after it
+ThreadLocal Arena request_arena;
+
+WorkQueue connection_queue;
 
 void crash_handler()
 {
@@ -438,6 +444,75 @@ void crash_handler()
     close(server_fd);
   }
   _Exit(EXIT_FAILURE);
+}
+
+HttpResponse handle_http_request(HttpMessageParser *message_parser, HttpRequest *request)
+{
+  HttpResponse response = {0};
+  response.protocol_version = HttpProtocolVersion_1_1;
+  if (message_parser->error)
+  {
+    response.status_code = message_parser->error;
+  }
+  else if (request->method == HttpMethod_GET)
+  {
+    response.body = STR_LIT("<!DOCTYPE html>"
+                         "<html lang=\"en\">"
+                         "<head>"
+                         "    <meta charset=\"UTF-8\">"
+                         "    <title>200 OK</title>"
+                         "</head>"
+                         "<body>"
+                         "    <h1>Success (200 OK)</h1>"
+                         "    <p>The request was successful, and the server responded with the requested data.</p>"
+                         "</body>"
+                         "</html>\r\n");
+    response.content_length = response.body.length;
+    response.content_type = STR_LIT("text/html");
+    response.status_code = HttpStatus_OK;
+  }
+  else if (request->method == HttpMethod_POST)
+  {
+    b32 valid_body = true;
+    if (http_content_type_is(request->content_type, STR_LIT("application/json")))
+    {
+      JsonDocument document = json_parse(&request_arena, request->body);
+      valid_body = document.error == JsonError_None;
+    }
+    if (valid_body)
+    {
+      response.body = request->body;
+      response.content_length = response.body.length;
+      response.content_type = request->content_type;
+      response.status_code = HttpStatus_OK;
+    }
+    else
+    {
+      response.status_code = HttpStatus_Bad_Request;
+    }
+  }
+  else
+  {
+    response.status_code = HttpStatus_Method_Not_Allowed;
+  }
+  return response;
+}
+
+// Runs on a worker thread. data is the connection's socket.
+void handle_connection(WorkQueue *queue, void *data)
+{
+  (void)queue;
+  i32 socket_fd = (i32)(uintptr_t)data;
+  TempMemory temp_memory = temp_memory_begin(&request_arena);
+  HttpMessageParser message_parser = {0};
+  HttpRequest request = {0};
+  if (read_http_request(socket_fd, &request_arena, &message_parser, &request))
+  {
+    HttpResponse response = handle_http_request(&message_parser, &request);
+    send_http_response(socket_fd, &response);
+  }
+  close(socket_fd);
+  temp_memory_end(temp_memory);
 }
 
 int main()
@@ -452,6 +527,16 @@ int main()
     return -1;
   }
 
+  u32 worker_count = os_get_processor_count();
+  OsThread *workers = PushArray(&permanent_arena, OsThread, worker_count);
+  if (!work_queue_init(&connection_queue, worker_count, workers))
+  {
+    printf("Failed to start the worker threads\n");
+    close(server_fd);
+    return -1;
+  }
+
+  // The accept loop is the queue's only producer
   while (1)
   {
     struct sockaddr_in connection_address = {0};
@@ -462,65 +547,17 @@ int main()
       printf("Failed to establish connection. errno: %d\n", errno);
       continue;
     }
-    TempMemory temp_memory = temp_memory_begin(&request_arena);
     printf("New connection\n");
-
-    HttpMessageParser message_parser = {0};
-    HttpRequest request = {0};
-    if (read_http_request(new_socket_fd, &request_arena, &message_parser, &request))
+    if (!work_queue_add_entry(&connection_queue, handle_connection, (void *)(uintptr_t)new_socket_fd))
     {
-      HttpResponse response = {0};
-      response.protocol_version = HttpProtocolVersion_1_1;
-      if (message_parser.error)
-      {
-        response.status_code = message_parser.error;
-      }
-      else if (request.method == HttpMethod_GET)
-      {
-        response.body = STR_LIT("<!DOCTYPE html>"
-                             "<html lang=\"en\">"
-                             "<head>"
-                             "    <meta charset=\"UTF-8\">"
-                             "    <title>200 OK</title>"
-                             "</head>"
-                             "<body>"
-                             "    <h1>Success (200 OK)</h1>"
-                             "    <p>The request was successful, and the server responded with the requested data.</p>"
-                             "</body>"
-                             "</html>\r\n");
-        response.content_length = response.body.length;
-        response.content_type = STR_LIT("text/html");
-        response.status_code = HttpStatus_OK;
-      }
-      else if (request.method == HttpMethod_POST)
-      {
-        b32 valid_body = true;
-        if (http_content_type_is(request.content_type, STR_LIT("application/json")))
-        {
-          JsonDocument document = json_parse(&request_arena, request.body);
-          valid_body = document.error == JsonError_None;
-        }
-        if (valid_body)
-        {
-          response.body = request.body;
-          response.content_length = response.body.length;
-          response.content_type = request.content_type;
-          response.status_code = HttpStatus_OK;
-        }
-        else
-        {
-          response.status_code = HttpStatus_Bad_Request;
-        }
-      }
-      else
-      {
-        response.status_code = HttpStatus_Method_Not_Allowed;
-      }
+      // The request isn't read, so the client may see a reset instead of the response if it's still sending
+      HttpResponse response = {
+        .protocol_version = HttpProtocolVersion_1_1,
+        .status_code = HttpStatus_Service_Unavailable,
+      };
       send_http_response(new_socket_fd, &response);
+      close(new_socket_fd);
     }
-
-    close(new_socket_fd);
-    temp_memory_end(temp_memory);
   }
 
   printf("Done\n");

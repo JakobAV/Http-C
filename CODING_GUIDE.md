@@ -30,7 +30,8 @@ Conventions for this codebase. Where existing code disagrees with this guide, th
 ## Memory
 
 - **Use arenas, never `malloc`/`free`.** A zero-initialized `Arena` is valid and sets itself up on its first `arena_push`.
-- `permanent_arena` holds data that lives for the whole program. `request_arena` holds per-connection data and is wrapped in `temp_memory_begin`/`temp_memory_end` in the accept loop.
+- `permanent_arena` holds data that lives for the whole program. It's only used from the main thread. `request_arena` is thread-local and holds per-connection data. Each worker wraps a connection in `temp_memory_begin`/`temp_memory_end`.
+- Arenas aren't thread-safe. Never share one between threads; use a thread-local arena or the scratch arenas, which are per thread.
 - Anything pushed to `request_arena`, and every `String` that points into the request buffer, is **invalid after `temp_memory_end`**. Never store it anywhere that lives longer.
 - Every push aligns its **start** (to the arena's alignment, 16, or the one given to `arena_push_aligned`). `arena->alignment` is never changed by an aligned push.
 - Consecutive pushes are contiguous only when each size is a multiple of the next push's alignment. The request read loop depends on this (4 KB chunks).
@@ -51,6 +52,12 @@ Conventions for this codebase. Where existing code disagrees with this guide, th
 - Opaque handles for OS objects that differ in size use fixed-size storage (`typedef struct OsSemaphore { _Alignas(8) u8 storage[32]; } OsSemaphore;`), and each implementation `static_assert`s that its native type fits.
 - Atomics use an `atomic_` prefix (not `os_`) with a type suffix and, where it applies, an ordering (`atomic_load_acquire_u32`), so the names never clash with `<stdatomic.h>`.
 - **Compiler differences are not platform differences.** The trap and thread-local storage are handled by the `#if defined(_MSC_VER)` block in `base_types.h` (`Trap()`, `ThreadLocal`).
+
+## Threads
+
+- Shared state between threads goes through the `atomic_*` platform functions, with the ordering spelled out: publish with a release store, read with an acquire load. Plain `volatile` is not synchronization.
+- State whether a function is single-producer or thread-safe in its comment.
+- Run code that changes threading under ThreadSanitizer (`gcc -fsanitize=thread`), for example the tests, which include a multi-threaded work-queue test.
 
 ## Errors and assertions
 
