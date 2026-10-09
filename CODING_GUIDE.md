@@ -25,6 +25,7 @@ Conventions for this codebase. Where existing code disagrees with this guide, th
 - Parsed data is a `String` that points into the original buffer. **Don't copy** unless the data has to outlive that buffer.
 - Print with `printf("%.*s", (i32)s.length, s.text)`.
 - Don't use `<string.h>`. Add `string_` functions in `string_utils.c` instead.
+- Print with `os_print`, a `printf`-style function with format checking. To print an `i64` portably, cast it to `i32` when it's known to be small, or format it with `string_from_int` and print the `String`.
 
 ## Memory
 
@@ -80,6 +81,11 @@ Rules:
 - Multi-statement macros are wrapped in `do { ... } while (0)`.
 - For lists that generate several pieces of code, use **X-macros** (see `HTTP_STATUS_LIST` in `http_status.c`). Add an entry by adding one `X(...)` line.
 - Naming: constants and tables use `UPPER_SNAKE` (`DEFAULT_PORT`, `STR_LIT`, `HTTP_STATUS_LIST`). Statement-like helper macros use `PascalCase` (`InvalidCodePath`, `AssertAligned`, `KB`).
+
+## Tests
+
+- `tests/test_main.c` is a second unity build that includes the platform layer and the modules it tests. `build_tests.sh` builds it in debug and release (`-DNDEBUG`) and runs both. Both must pass.
+- Parsers that take client input get malformed-input tests, including every truncation of a valid input and random mutations, which must never crash or assert.
 
 ## Debug output
 

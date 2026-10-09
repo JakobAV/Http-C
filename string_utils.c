@@ -25,6 +25,28 @@ b32 strings_are_equal(String string_one, String string_two)
   return true;
 }
 
+char char_to_lower(char c)
+{
+  return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+}
+
+// ASCII only
+b32 strings_are_equal_ignore_case(String string_one, String string_two)
+{
+  if (string_one.length != string_two.length)
+  {
+    return false;
+  }
+  for (i64 i = 0; i < string_one.length; ++i)
+  {
+    if (char_to_lower(string_one.text[i]) != char_to_lower(string_two.text[i]))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
 b32 string_starts_with(String string, String prefix)
 {
   if (string.length < prefix.length)

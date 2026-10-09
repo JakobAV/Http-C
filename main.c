@@ -19,6 +19,7 @@
 #include "memory_utils.c"
 #include "http_status.c"
 #include "arena.c"
+#include "json.c"
 
 #define DEFAULT_PORT 8888
 #define READ_CHUNK_SIZE KB(4)
@@ -232,23 +233,22 @@ void parse_http_request_headers(HttpRequest *request, HttpMessageParser *message
   {
     String current_header_name = http_parser_get_next_string(message_parser, ':');
     String current_header_value = string_trim_whitespace(http_parser_get_next_string(message_parser, '\r'));
-    // TODO: Header names are case-insensitive
-    if (strings_are_equal(current_header_name, STR_LIT("Host")))
+    if (strings_are_equal_ignore_case(current_header_name, STR_LIT("Host")))
     {
       request->host = current_header_value;
       continue;
     }
-    if (strings_are_equal(current_header_name, STR_LIT("User-Agent")))
+    if (strings_are_equal_ignore_case(current_header_name, STR_LIT("User-Agent")))
     {
       request->user_agent = current_header_value;
       continue;
     }
-    if (strings_are_equal(current_header_name, STR_LIT("Content-Type")))
+    if (strings_are_equal_ignore_case(current_header_name, STR_LIT("Content-Type")))
     {
       request->content_type = current_header_value;
       continue;
     }
-    if (strings_are_equal(current_header_name, STR_LIT("Content-Length")))
+    if (strings_are_equal_ignore_case(current_header_name, STR_LIT("Content-Length")))
     {
       i64 content_length = 0;
       if (!string_parse_int(current_header_value, &content_length) || content_length < 0)
@@ -378,6 +378,18 @@ b32 send_string(i32 socket_fd, String string)
   return true;
 }
 
+// Compares the media type of a Content-Type value, ignoring parameters such as "; charset=utf-8"
+b32 http_content_type_is(String content_type, String media_type)
+{
+  i64 end = 0;
+  while (end < content_type.length && content_type.text[end] != ';')
+  {
+    end++;
+  }
+  String type = string_trim_whitespace((String){end, content_type.text});
+  return strings_are_equal_ignore_case(type, media_type);
+}
+
 void send_http_response(i32 socket_fd, HttpResponse *response)
 {
   // TODO: Build the response buffer and send in one call
@@ -482,10 +494,23 @@ int main()
       }
       else if (request.method == HttpMethod_POST)
       {
-        response.body = request.body;
-        response.content_length = response.body.length;
-        response.content_type = request.content_type;
-        response.status_code = HttpStatus_OK;
+        b32 valid_body = true;
+        if (http_content_type_is(request.content_type, STR_LIT("application/json")))
+        {
+          JsonDocument document = json_parse(&request_arena, request.body);
+          valid_body = document.error == JsonError_None;
+        }
+        if (valid_body)
+        {
+          response.body = request.body;
+          response.content_length = response.body.length;
+          response.content_type = request.content_type;
+          response.status_code = HttpStatus_OK;
+        }
+        else
+        {
+          response.status_code = HttpStatus_Bad_Request;
+        }
       }
       else
       {

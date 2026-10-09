@@ -3,6 +3,10 @@
 #define _DEFAULT_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <float.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -110,4 +114,39 @@ b32 os_read_entire_file(Arena *arena, String path, String *result)
   }
   *result = (String){(i64)bytes_read, buffer};
   return true;
+}
+
+b32 os_parse_f64(String text, f64 *result)
+{
+  assert(result);
+  // strtod needs a null-terminated string. We never call setlocale, so '.' is the decimal point.
+  char buffer[256];
+  if (text.length <= 0 || text.length >= (i64)sizeof(buffer))
+  {
+    return false;
+  }
+  memcpy(buffer, text.text, text.length);
+  buffer[text.length] = 0;
+  char *end = null;
+  errno = 0;
+  f64 value = strtod(buffer, &end);
+  if (end != buffer + text.length)
+  {
+    return false;
+  }
+  // Underflow is fine (rounds towards zero), overflow to infinity is not
+  if (errno == ERANGE && (value > DBL_MAX || value < -DBL_MAX))
+  {
+    return false;
+  }
+  *result = value;
+  return true;
+}
+
+void os_print(char *format, ...)
+{
+  va_list arguments;
+  va_start(arguments, format);
+  vprintf(format, arguments);
+  va_end(arguments);
 }

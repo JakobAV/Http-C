@@ -35,9 +35,13 @@ typedef struct String
 #if defined(_MSC_VER)
 #define Trap() __fastfail(7)
 #define ThreadLocal __declspec(thread)
+#define PrintfFormat(format_index, first_argument_index)
 #else
 #define Trap() __builtin_trap()
 #define ThreadLocal _Thread_local
+// Lets the compiler check format strings against their arguments
+#define PrintfFormat(format_index, first_argument_index) \
+  __attribute__((format(printf, format_index, first_argument_index)))
 #endif
 
 // Crashes in release builds too: if this is reached, the program state can't be trusted

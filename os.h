@@ -16,3 +16,11 @@ void os_release_memory(void *memory, u64 size);
 // Files
 // Reads the whole file into arena. Returns false if it can't be opened or read (missing file, permissions, ...).
 b32 os_read_entire_file(Arena *arena, String path, String *result);
+
+// Number parsing
+// Converts the whole text to a f64, with '.' as the decimal point. Returns false if the text isn't a number,
+// is too long or is out of range. Callers validate their own number syntax first.
+b32 os_parse_f64(String text, f64 *result);
+
+// Console output
+void os_print(char *format, ...) PrintfFormat(1, 2);
