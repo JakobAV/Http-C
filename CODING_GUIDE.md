@@ -7,12 +7,12 @@ Conventions for this codebase. Where existing code disagrees with this guide, th
 - The project is a **unity build**: `main.c` is the only translation unit, and every other file is `#include`d into it. Never add files to the gcc command in `build.sh`.
 - Any file containing **function bodies uses `.c`**. **`.h` files only hold types, macros and declarations.**
 - Every file starts with `#pragma once`.
-- Include order in `main.c`: the platform block (`os_linux.c`, see [Platform layer](#platform-layer)) first, then system headers, then `base_types.h`, then project headers, then project `.c` files.
+- `main.c` is the unity-build root and only includes files: the platform block (`os_linux.c`, see [Platform layer](#platform-layer)) first, then `base_types.h`, then the project `.c` files in dependency order. Application code lives in its modules, such as `http_server.c`, which defines `app_run`. The test build (`tests/test_main.c`) follows the same pattern.
 - The build must stay warning-free under `-Wall -Wextra -pedantic -std=c11`.
 
 ## Base types
 
-- Use the typedefs from `base_types.h` (`i8..i64`, `u8..u64`, `f32`, `f64`, `b32`). Don't use raw `int`, `long` and so on, except where a system API requires them (`socklen_t`, `ssize_t`).
+- Use the typedefs from `base_types.h` (`i8..i64`, `u8..u64`, `f32`, `f64`, `b32`). Don't use raw `int`, `long` and so on, except where a system API requires them in platform code (`socklen_t`, `ssize_t`) and for `main`'s `int`.
 - The integer typedefs are based on `<stdint.h>` (`int32_t`, `uint64_t`, ...), with a `static_assert` checking each size.
 - Booleans are `b32`, with the `true` and `false` macros. Don't include `<stdbool.h>`. Null pointers are `null`.
 - Sizes, lengths and offsets are `i64` (for `String`) or `u64` (for memory). Loop indices use the same type as the bound they're compared with.
@@ -23,7 +23,7 @@ Conventions for this codebase. Where existing code disagrees with this guide, th
 - `String` (`{i64 length; char *text}`) is a **non-null-terminated** slice. Pass and return it by value.
 - Make literals only with `STR_LIT("...")`. It relies on `sizeof`, so it gives the wrong length for a `char *`.
 - Parsed data is a `String` that points into the original buffer. **Don't copy** unless the data has to outlive that buffer.
-- Print with `printf("%.*s", (i32)s.length, s.text)`.
+- Print with `os_print("%.*s", (i32)s.length, s.text)`.
 - Don't use `<string.h>`. Add `string_` functions in `string_utils.c` instead.
 - Print with `os_print`, a `printf`-style function with format checking. To print an `i64` portably, cast it to `i32` when it's known to be small, or format it with `string_from_int` and print the `String`.
 
@@ -38,7 +38,7 @@ Conventions for this codebase. Where existing code disagrees with this guide, th
 - `arena_push` and the `PushType`/`PushArray`/`PushArrayAligned` macros zero the memory. The `_no_zero`/`NoZero` variants don't. Use them only when the caller overwrites the whole allocation straight away, such as the request read buffer. Decommitted memory can come back holding old data, so never rely on unzeroed memory being zero.
 - The array macros check `count * sizeof(type)` for overflow and trap. They don't make an untrusted count safe: bound it before pushing.
 - **Scratch arenas:** `arena_get_scratch(conflict)` returns one of two thread-local scratch arenas, the one that isn't `conflict`. A function that writes into an output arena and also uses scratch passes its output arena as `conflict` (it might itself be a scratch arena). Pass `null` when there is no output arena. Wrap each use in `temp_memory_begin`/`temp_memory_end`.
-- Scratch memory is a stack: code that recurses can't build one contiguous array in scratch while a nested call pushes to the same arena.
+- Scratch memory is a stack. Recursive code can still build one contiguous array per level in scratch if every nested call resets scratch to where it started before returning, as `json.c` does. Copy each finished array to the output arena.
 - Use `memory_copy` and `memory_set` (`memory_utils.c`), not `<string.h>`.
 
 ## Platform layer
@@ -80,7 +80,7 @@ Rules:
   - **505 HTTP Version Not Supported**: an unsupported protocol version.
   - **413/431**: a body or headers that are too large.
   - **5xx in general**: faults on the server side.
-- Check the return value of every system call (`socket`, `read`, `send`, `mprotect`, ...). Recover where you can, for example by dropping the connection and continuing. A failure that leaves our own state corrupt is an `InvalidCodePath`.
+- In the platform layer, check the return value of every system call (`socket`, `read`, `send`, `mprotect`, ...) and turn failures into return values. In shared code, check the platform functions' results. Recover where you can, for example by dropping the connection and continuing. A failure that leaves our own state corrupt is an `InvalidCodePath`.
 
 ## Macros
 
@@ -118,4 +118,4 @@ Rules:
 
 Existing code that doesn't follow this guide yet. Fix these when you touch the surrounding code:
 
-- `main.c` still calls the OS and libc directly: `<stdio.h>` (`printf`), `<stdlib.h>` (`_Exit`), `<unistd.h>` (`read`, `close`), `<arpa/inet.h>`/`<sys/socket.h>` (`socket`, `setsockopt`, `bind`, `listen`, `accept`, `send`, `htons`), `<errno.h>` and `<signal.h>`. These move behind the platform layer in phase 5 of `DEVELOPMENT_PLAN.md`.
+- None currently.

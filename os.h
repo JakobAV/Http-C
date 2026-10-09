@@ -54,3 +54,22 @@ void atomic_store_release_u32(u32 volatile *value, u32 new_value);
 b32 atomic_compare_exchange_u32(u32 volatile *value, u32 expected, u32 desired);
 // Returns the new value
 u32 atomic_increment_u32(u32 volatile *value);
+
+// Sockets (TCP). Errors are reported through return values and the socket is never left half-open.
+typedef struct OsSocket
+{
+  u64 handle;
+} OsSocket;
+
+// Listens on every interface. Prints the reason and returns false on failure.
+b32 os_socket_listen(u16 port, OsSocket *result);
+b32 os_socket_accept(OsSocket listener, OsSocket *result);
+// Returns the number of bytes read, 0 when the peer has closed the connection, or -1 on an error
+i64 os_socket_read(OsSocket socket, void *buffer, u64 size);
+// Sends all of buffer. Returns false if the connection failed. Never raises SIGPIPE or an equivalent.
+b32 os_socket_send(OsSocket socket, void *buffer, u64 size);
+void os_socket_close(OsSocket socket);
+
+// Entry point. The platform's main sets up the process and then calls app_run, which the application
+// defines. Its return value is the process exit code.
+i32 app_run(void);

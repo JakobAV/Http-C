@@ -1,17 +1,20 @@
 #pragma once
 // Must come before the first system header: -std=c11 hides madvise and MADV_* otherwise
 #define _DEFAULT_SOURCE
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <float.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -240,4 +243,120 @@ b32 atomic_compare_exchange_u32(u32 volatile *value, u32 expected, u32 desired)
 u32 atomic_increment_u32(u32 volatile *value)
 {
   return atomic_fetch_add((_Atomic u32 volatile *)value, 1) + 1;
+}
+
+// Closed by the crash handler so the port is released straight away
+i32 linux_listen_fd = -1;
+
+b32 os_socket_listen(u16 port, OsSocket *result)
+{
+  assert(result);
+  i32 fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd == -1)
+  {
+    printf("Error opening socket: %s\n", strerror(errno));
+    return false;
+  }
+  struct sockaddr_in socket_address = {
+    .sin_port = htons(port),
+    .sin_addr.s_addr = INADDR_ANY,
+    .sin_family = AF_INET,
+  };
+  i32 option = 1;
+  // Bind to the port even if an old connection on it is still in TIME_WAIT
+  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option)) < 0)
+  {
+    printf("setsockopt failed: %s\n", strerror(errno));
+    close(fd);
+    return false;
+  }
+  if (bind(fd, (struct sockaddr *)&socket_address, sizeof(socket_address)) == -1)
+  {
+    printf("Error binding socket: %s\n", strerror(errno));
+    close(fd);
+    return false;
+  }
+  if (listen(fd, 64) == -1)
+  {
+    printf("Error listening to socket: %s\n", strerror(errno));
+    close(fd);
+    return false;
+  }
+  linux_listen_fd = fd;
+  *result = (OsSocket){(u64)fd};
+  return true;
+}
+
+b32 os_socket_accept(OsSocket listener, OsSocket *result)
+{
+  assert(result);
+  while (true)
+  {
+    i32 fd = accept((i32)listener.handle, null, null);
+    if (fd >= 0)
+    {
+      *result = (OsSocket){(u64)fd};
+      return true;
+    }
+    if (errno != EINTR)
+    {
+      return false;
+    }
+  }
+}
+
+i64 os_socket_read(OsSocket socket, void *buffer, u64 size)
+{
+  while (true)
+  {
+    i64 bytes_read = read((i32)socket.handle, buffer, size);
+    if (bytes_read >= 0 || errno != EINTR)
+    {
+      return bytes_read < 0 ? -1 : bytes_read;
+    }
+  }
+}
+
+b32 os_socket_send(OsSocket socket, void *buffer, u64 size)
+{
+  u8 *at = buffer;
+  while (size > 0)
+  {
+    // MSG_NOSIGNAL: a client that disconnects early must not kill the server with SIGPIPE
+    i64 bytes_sent = send((i32)socket.handle, at, size, MSG_NOSIGNAL);
+    if (bytes_sent < 0)
+    {
+      if (errno == EINTR)
+      {
+        continue;
+      }
+      return false;
+    }
+    at += bytes_sent;
+    size -= bytes_sent;
+  }
+  return true;
+}
+
+void os_socket_close(OsSocket socket)
+{
+  close((i32)socket.handle);
+}
+
+void linux_crash_handler(i32 signal_number)
+{
+  (void)signal_number;
+  if (linux_listen_fd != -1)
+  {
+    close(linux_listen_fd);
+  }
+  _Exit(EXIT_FAILURE);
+}
+
+int main(void)
+{
+  signal(SIGSEGV, linux_crash_handler);
+  signal(SIGFPE, linux_crash_handler);
+  signal(SIGABRT, linux_crash_handler);
+  return app_run();
 }

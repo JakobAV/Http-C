@@ -431,7 +431,7 @@ void test_work_queue(void)
   Check(atomic_load_acquire_u32(&work_sum) == expected_sum);
 }
 
-int main(void)
+i32 app_run(void)
 {
   struct
   {
