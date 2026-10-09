@@ -168,6 +168,8 @@ void os_print(char *format, ...)
   va_start(arguments, format);
   vprintf(format, arguments);
   va_end(arguments);
+  // stdout is fully buffered when it isn't a terminal, and a killed server would lose the buffered lines
+  fflush(stdout);
 }
 
 u32 os_get_processor_count(void)
