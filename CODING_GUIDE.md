@@ -7,7 +7,7 @@ Conventions for this codebase. Where existing code disagrees with this guide, th
 - The project is a **unity build**: `main.c` is the only translation unit, and every other file is `#include`d into it. Never add files to the gcc command in `build.sh`.
 - Any file containing **function bodies uses `.c`**. **`.h` files only hold types, macros and declarations.**
 - Every file starts with `#pragma once`.
-- `main.c` is the unity-build root and only includes files: the platform block (`os_linux.c`, see [Platform layer](#platform-layer)) first, then `base_types.h`, then the project `.c` files in dependency order. Application code lives in its modules, such as `http_server.c`, which defines `app_run`. The test build (`tests/test_main.c`) follows the same pattern.
+- `main.c` is the unity-build root. It includes the platform block (`os_linux.c`, see [Platform layer](#platform-layer)) first, then `base_types.h`, then the project `.c` files in dependency order. It also holds `main`, which calls `os_init()` and then hands over to the application (`http_server_run` in `http_server.c`). The test build (`tests/test_main.c`) follows the same pattern.
 - The build must stay warning-free under `-Wall -Wextra -pedantic -std=c11`.
 
 ## Base types

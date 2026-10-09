@@ -353,10 +353,9 @@ void linux_crash_handler(i32 signal_number)
   _Exit(EXIT_FAILURE);
 }
 
-int main(void)
+void os_init(void)
 {
   signal(SIGSEGV, linux_crash_handler);
   signal(SIGFPE, linux_crash_handler);
   signal(SIGABRT, linux_crash_handler);
-  return app_run();
 }

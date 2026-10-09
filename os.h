@@ -70,6 +70,5 @@ i64 os_socket_read(OsSocket socket, void *buffer, u64 size);
 b32 os_socket_send(OsSocket socket, void *buffer, u64 size);
 void os_socket_close(OsSocket socket);
 
-// Entry point. The platform's main sets up the process and then calls app_run, which the application
-// defines. Its return value is the process exit code.
-i32 app_run(void);
+// Process setup, such as crash handlers. Call it first thing in main.
+void os_init(void);

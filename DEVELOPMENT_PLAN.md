@@ -10,6 +10,7 @@ All five phases are done. Where the implementation differs from the plan below:
 - **`os_print`** was added in phase 3 instead of 5, because the tests needed it.
 - **JSON scratch use:** no linked list was needed. Each nested object or array resets scratch before returning, so every level's element list stays contiguous. The getters take `JsonObject *`/`JsonArray *` rather than `JsonNode *`, because elements of typed arrays aren't nodes.
 - **Work queue:** a worker copies an entry only after claiming it. A per-slot `in_use` flag stops the producer from reusing the slot before that copy is done. Copying before the compare-exchange, as the original did, is a data race that ThreadSanitizer flagged.
+- **Entry point:** `main` stays in `main.c` and calls `os_init()` (process setup such as crash handlers), then `http_server_run()`. The plan below had `main` in `os_linux.c` calling `app_run()`.
 - **Extra:** HTTP header names are matched case-insensitively. The 503 for a full queue is sent without reading the request, so a client that's still sending may see a connection reset instead.
 
 All ported code must follow `CODING_GUIDE.md`. In particular:

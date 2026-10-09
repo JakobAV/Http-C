@@ -380,7 +380,7 @@ void test_large_file(void)
 u32 volatile work_counter;
 u32 volatile work_sum;
 
-void add_to_counter(WorkQueue *queue, void *data)
+WorkQueueCallback(add_to_counter)
 {
   (void)queue;
   atomic_increment_u32(&work_counter);
@@ -431,8 +431,9 @@ void test_work_queue(void)
   Check(atomic_load_acquire_u32(&work_sum) == expected_sum);
 }
 
-i32 app_run(void)
+int main(void)
 {
+  os_init();
   struct
   {
     char *name;

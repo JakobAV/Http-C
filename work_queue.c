@@ -9,7 +9,9 @@
 #endif
 
 typedef struct WorkQueue WorkQueue;
-typedef void WorkQueueCallback(WorkQueue *queue, void *data);
+// Declares or defines a callback: static WorkQueueCallback(do_work) { ... }
+#define WorkQueueCallback(name) void name(WorkQueue *queue, void *data)
+typedef WorkQueueCallback(WorkQueueCallback);
 
 typedef struct WorkQueueEntry
 {

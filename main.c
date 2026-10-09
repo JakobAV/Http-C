@@ -1,4 +1,4 @@
-// The unity build root: the only translation unit, it includes every other file
+// The unity build root: the only translation unit, it includes every other file and holds main
 // Must be the first include: os_linux.c sets feature-test macros before any system header
 #if defined(__linux__)
 #include "os_linux.c"
@@ -15,3 +15,9 @@
 #include "json.c"
 #include "work_queue.c"
 #include "http_server.c"
+
+int main(void)
+{
+  os_init();
+  return http_server_run();
+}

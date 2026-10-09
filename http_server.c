@@ -415,7 +415,7 @@ HttpResponse handle_http_request(HttpMessageParser *message_parser, HttpRequest 
 }
 
 // Runs on a worker thread. data is the connection's socket handle.
-void handle_connection(WorkQueue *queue, void *data)
+WorkQueueCallback(handle_connection)
 {
   (void)queue;
   OsSocket socket = {(u64)(uintptr_t)data};
@@ -431,7 +431,8 @@ void handle_connection(WorkQueue *queue, void *data)
   temp_memory_end(temp_memory);
 }
 
-i32 app_run(void)
+// Listens and serves connections until the process is stopped. Returns the exit code if it fails to start.
+i32 http_server_run(void)
 {
   OsSocket server = {0};
   if (!os_socket_listen(DEFAULT_PORT, &server))
