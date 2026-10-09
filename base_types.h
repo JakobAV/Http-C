@@ -31,11 +31,22 @@ typedef struct String
 
 #define STR_LIT(text) (String){sizeof((text))-1, (text)}
 
+// Compiler differences, not platform differences: these don't belong in the platform layer
+#if defined(_MSC_VER)
+#define Trap() __fastfail(7)
+#define ThreadLocal __declspec(thread)
+#else
+#define Trap() __builtin_trap()
+#define ThreadLocal _Thread_local
+#endif
+
 // Crashes in release builds too: if this is reached, the program state can't be trusted
-#define InvalidCodePath __builtin_trap()
+#define InvalidCodePath Trap()
 #define NotImplemented assert(0)
 #define IsAligned(pointer, bytes) (((u64)pointer % bytes) == 0)
 #define AssertAligned(pointer, bytes) assert(IsAligned(pointer, bytes))
+
+#define ArrayCount(array) (sizeof(array) / sizeof((array)[0]))
 
 #define KB(n) (((u64)n) << 10)
 #define MB(n) (((u64)n) << 20)

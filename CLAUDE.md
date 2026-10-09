@@ -19,15 +19,17 @@ There is no test suite, linter or Makefile. Check changes by building cleanly (t
 
 ## Architecture
 
-**Unity build:** `main.c` is the only translation unit. The other `.c` files (`string_utils.c`, `http_status.c`, `arena.c`) are `#include`d into it, and `.h` files hold only types and macros. If you add a new module, include it from `main.c` the same way rather than adding it to the gcc command.
+**Unity build:** `main.c` is the only translation unit. The other `.c` files (`os_linux.c`, `string_utils.c`, `memory_utils.c`, `http_status.c`, `arena.c`) are `#include`d into it, and `.h` files hold only types and macros. If you add a new module, include it from `main.c` the same way rather than adding it to the gcc command.
 
 **Core conventions (`base_types.h`):**
 - Fixed-width typedefs on top of `<stdint.h>`: `i8..i64`, `u8..u64`, `f32/f64`, `b32`. It also defines `true`/`false`/`null` macros, so don't include `<stdbool.h>`.
 - `String` is a length-prefixed, **non-null-terminated** slice (`{i64 length; char *text}`). Make literals with `STR_LIT("...")` and print with `printf("%.*s", (i32)s.length, s.text)`. Parsed request fields are `String`s pointing into the request buffer and are never copied.
 - Error handling has three tiers. `InvalidCodePath` traps even in release builds, `assert` is for development checks only, and `UnhandledInput(parser, status)` handles bad client input. See `CODING_GUIDE.md`.
-- Size helpers: `KB()`, `MB()`, `GB()`.
+- Size helpers: `KB()`, `MB()`, `GB()`, plus `ArrayCount()`. Compiler differences (`Trap()`, `ThreadLocal`) are in an `#if defined(_MSC_VER)` block.
 
-**Memory (`arena.c`):** this is a virtual-memory arena. It reserves 2 GB with `PROT_NONE` and commits pages lazily with `mprotect` in 4 KB granules. `arena_push` initializes the arena on first use, so a zeroed global `Arena` is valid. Request handling is scoped with `temp_memory_begin`/`temp_memory_end` on `request_arena`, which resets the arena after each connection. Use arenas instead of `malloc`. `permanent_arena` is for long-lived allocations.
+**Platform layer (`os.h`, `os_linux.c`):** all OS and libc calls are meant to go through `os_` functions in `os_linux.c`, which `main.c` includes first. So far it covers virtual memory; `main.c` still calls sockets and `printf` directly until phase 5 (see `CODING_GUIDE.md`, "Known deviations").
+
+**Memory (`arena.c`):** this is a virtual-memory arena. It reserves 2 GB and commits pages lazily in page-size granules through `os_reserve_memory`/`os_commit_memory`. Popping far enough back decommits (`MADV_FREE` + `PROT_NONE` on Linux). `arena_push` initializes the arena on first use, so a zeroed global `Arena` is valid. Pushes align their start and zero the memory (`_no_zero`/`NoZero` variants skip that). Each thread has two scratch arenas through `arena_get_scratch(conflict)`. Request handling is scoped with `temp_memory_begin`/`temp_memory_end` on `request_arena`, which resets the arena after each connection. Use arenas instead of `malloc`. `permanent_arena` is for long-lived allocations.
 
 **Request flow (`main.c`):** `create_server` → `accept` loop → `read_http_request` → build an `HttpResponse` → `send_http_response` → close the connection. `read_http_request` reads the socket into the arena in 4 KB chunks. The chunks stay contiguous because nothing else pushes to the arena during the read. It reads until `\r\n\r\n`, parses the head, then reads `Content-Length` bytes of body. Requests are capped at `MAX_REQUEST_SIZE` (431 or 413 if larger). `HttpMessageParser` is a bounds-checked cursor over the head with a sticky `error` status, and the handler responds with that status if it's set. The `parse_http_*` functions handle the method, path, version and headers in order. Only `Host`, `User-Agent`, `Content-Type` and `Content-Length` are recognized; other headers are skipped. Methods use an X-macro list (`HTTP_METHOD_LIST`). The response is written with many `send_string` calls, which echo to stdout under `DEBUG_LOG`.
 

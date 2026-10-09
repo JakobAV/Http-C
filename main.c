@@ -1,3 +1,9 @@
+// Must be the first include: os_linux.c sets feature-test macros before any system header
+#if defined(__linux__)
+#include "os_linux.c"
+#else
+#error "Unsupported platform"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +16,7 @@
 #include "base_types.h"
 
 #include "string_utils.c"
+#include "memory_utils.c"
 #include "http_status.c"
 #include "arena.c"
 
@@ -291,7 +298,7 @@ b32 read_http_request(i32 socket_fd, Arena *arena, HttpMessageParser *message_pa
         UnhandledInput(message_parser, HttpStatus_Request_Header_Fields_Too_Large);
         return true;
       }
-      char *chunk = arena_push(arena, READ_CHUNK_SIZE);
+      char *chunk = arena_push_no_zero(arena, READ_CHUNK_SIZE);
       if (buffer == null)
       {
         buffer = chunk;

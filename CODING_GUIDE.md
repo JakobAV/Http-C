@@ -7,7 +7,7 @@ Conventions for this codebase. Where existing code disagrees with this guide, th
 - The project is a **unity build**: `main.c` is the only translation unit, and every other file is `#include`d into it. Never add files to the gcc command in `build.sh`.
 - Any file containing **function bodies uses `.c`**. **`.h` files only hold types, macros and declarations.**
 - Every file starts with `#pragma once`.
-- Include order in `main.c`: system headers, then `base_types.h`, then project headers, then project `.c` files.
+- Include order in `main.c`: the platform block (`os_linux.c`, see [Platform layer](#platform-layer)) first, then system headers, then `base_types.h`, then project headers, then project `.c` files.
 - The build must stay warning-free under `-Wall -Wextra -pedantic -std=c11`.
 
 ## Base types
@@ -31,7 +31,25 @@ Conventions for this codebase. Where existing code disagrees with this guide, th
 - **Use arenas, never `malloc`/`free`.** A zero-initialized `Arena` is valid and sets itself up on its first `arena_push`.
 - `permanent_arena` holds data that lives for the whole program. `request_arena` holds per-connection data and is wrapped in `temp_memory_begin`/`temp_memory_end` in the accept loop.
 - Anything pushed to `request_arena`, and every `String` that points into the request buffer, is **invalid after `temp_memory_end`**. Never store it anywhere that lives longer.
-- Consecutive `arena_push` calls are contiguous only when every size is a multiple of the arena's alignment (16). The request read loop depends on this.
+- Every push aligns its **start** (to the arena's alignment, 16, or the one given to `arena_push_aligned`). `arena->alignment` is never changed by an aligned push.
+- Consecutive pushes are contiguous only when each size is a multiple of the next push's alignment. The request read loop depends on this (4 KB chunks).
+- `arena_push` and the `PushType`/`PushArray`/`PushArrayAligned` macros zero the memory. The `_no_zero`/`NoZero` variants don't. Use them only when the caller overwrites the whole allocation straight away, such as the request read buffer. Decommitted memory can come back holding old data, so never rely on unzeroed memory being zero.
+- The array macros check `count * sizeof(type)` for overflow and trap. They don't make an untrusted count safe: bound it before pushing.
+- **Scratch arenas:** `arena_get_scratch(conflict)` returns one of two thread-local scratch arenas, the one that isn't `conflict`. A function that writes into an output arena and also uses scratch passes its output arena as `conflict` (it might itself be a scratch arena). Pass `null` when there is no output arena. Wrap each use in `temp_memory_begin`/`temp_memory_end`.
+- Scratch memory is a stack: code that recurses can't build one contiguous array in scratch while a nested call pushes to the same arena.
+- Use `memory_copy` and `memory_set` (`memory_utils.c`), not `<string.h>`.
+
+## Platform layer
+
+- **Application code only calls functions defined in this codebase.** Calls to the OS *and to libc* (`printf`, `strtod`, `memcpy`, sockets, `mmap`, pthreads, ...) only happen in `os_<platform>.c`.
+- `os.h` declares the platform API (`os_` functions, `Os` handle types). `os_linux.c` is the only implementation. `main.c` includes it first, through an `#if defined(__linux__)` block.
+- **Keep platform code as small as possible.** The platform layer provides primitives, and logic built on them stays shared. For example, the arena logic is in `arena.c` and only calls `os_reserve_memory`, `os_commit_memory` and so on. Use a higher-level platform function only when the platforms differ in the whole operation (like reading an entire file).
+- Platform functions handle OS details internally (`EINTR` retries, `MSG_NOSIGNAL`, `errno`) and report failures through return values in our own types.
+- Freestanding headers are allowed everywhere: `<stdint.h>`, `<stddef.h>`, `<stdarg.h>`, `<limits.h>`, `<float.h>`. `base_types.h` also keeps `<assert.h>`. Every other system header is included **only** by `os_*.c`. Check with `grep -n '#include <' *.c *.h`.
+- `os_linux.c` defines `_DEFAULT_SOURCE` before its system headers. Under `-std=c11`, glibc hides `madvise` and `MADV_*` without it, and the macro only works before the *first* system header.
+- Opaque handles for OS objects that differ in size use fixed-size storage (`typedef struct OsSemaphore { _Alignas(8) u8 storage[32]; } OsSemaphore;`), and each implementation `static_assert`s that its native type fits.
+- Atomics use an `atomic_` prefix (not `os_`) with a type suffix and, where it applies, an ordering (`atomic_load_acquire_u32`), so the names never clash with `<stdatomic.h>`.
+- **Compiler differences are not platform differences.** The trap and thread-local storage are handled by the `#if defined(_MSC_VER)` block in `base_types.h` (`Trap()`, `ThreadLocal`).
 
 ## Errors and assertions
 
@@ -87,4 +105,4 @@ Rules:
 
 Existing code that doesn't follow this guide yet. Fix these when you touch the surrounding code:
 
-- None currently.
+- `main.c` still calls the OS and libc directly: `<stdio.h>` (`printf`), `<stdlib.h>` (`_Exit`), `<unistd.h>` (`read`, `close`), `<arpa/inet.h>`/`<sys/socket.h>` (`socket`, `setsockopt`, `bind`, `listen`, `accept`, `send`, `htons`), `<errno.h>` and `<signal.h>`. These move behind the platform layer in phase 5 of `DEVELOPMENT_PLAN.md`.
